@@ -20,10 +20,5 @@ python3 -m pip install -r requirements.txt
 python3 -m pytest
 ```
 
-По умолчанию тесты обращаются к учебному сервису
-`https://qa-scooter.education-services.ru/api/v1`. Для другого окружения можно
-задать корневой URL API:
-
-```bash
-SCOOTER_API_BASE_URL=https://example.test/api/v1 python3 -m pytest
-```
+Базовый URL API и пути ручек находятся в `tests/constants.py`. Чтобы запустить
+тесты против другого окружения, измени там `API_BASE_URL`.

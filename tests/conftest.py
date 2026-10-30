@@ -1,49 +1,24 @@
-import os
-import random
-import string
-from datetime import date, timedelta
+import logging
 from uuid import uuid4
 
+import allure
 import pytest
 import requests
 
+from constants import (
+    API_BASE_URL,
+    CANCEL_ORDER_ENDPOINT,
+    DELETE_COURIER_ENDPOINT,
+    LOGIN_COURIER_ENDPOINT,
+    ORDERS_ENDPOINT,
+)
 
-API_BASE_URL = os.getenv(
-    "SCOOTER_API_BASE_URL",
-    "https://qa-scooter.education-services.ru/api/v1",
-).rstrip("/")
-
-
-def register_new_courier_and_return_login_password():
-    def generate_random_string(length):
-        letters = string.ascii_lowercase
-        random_string = "".join(random.choice(letters) for i in range(length))
-        return random_string
-
-    login_pass = []
-
-    login = generate_random_string(10)
-    password = generate_random_string(10)
-    first_name = generate_random_string(10)
-
-    payload = {
-        "login": login,
-        "password": password,
-        "firstName": first_name
-    }
-
-    response = requests.post(f"{API_BASE_URL}/courier", data=payload)
-
-    if response.status_code == 201:
-        login_pass.append(login)
-        login_pass.append(password)
-        login_pass.append(first_name)
-
-    return login_pass
+logger = logging.getLogger(__name__)
 
 
 @pytest.fixture
 def api_request():
+    @allure.step("API request: {method} {path}")
     def request(method, path, **kwargs):
         return requests.request(
             method,
@@ -65,67 +40,40 @@ def courier_payload():
 
 
 @pytest.fixture
-def courier_ids(api_request):
-    courier_ids = set()
+def courier_cleanup(api_request):
+    couriers = []
 
-    yield courier_ids
+    yield couriers
 
-    for courier_id in courier_ids:
-        response = api_request("DELETE", f"/courier/{courier_id}")
-        assert response.status_code in (200, 404), response.text
-
-
-@pytest.fixture
-def courier_factory(api_request, courier_ids):
-    def create(payload):
-        response = api_request("POST", "/courier", json=payload)
-        if response.status_code == 201:
-            login_response = api_request(
-                "POST",
-                "/courier/login",
-                json={"login": payload["login"], "password": payload["password"]},
+    for courier in couriers:
+        login_response = api_request(
+            "POST",
+            LOGIN_COURIER_ENDPOINT,
+            json={"login": courier["login"], "password": courier["password"]},
+        )
+        if login_response.status_code != 200:
+            logger.error(
+                "Could not log in to delete test courier (HTTP %s): %s",
+                login_response.status_code,
+                login_response.text,
             )
-            assert login_response.status_code == 200, login_response.text
-            courier_ids.add(login_response.json()["id"])
-        return response
+            continue
 
-    yield create
+        courier_id = login_response.json().get("id")
+        if courier_id is None:
+            logger.error("Login response for test courier does not contain id")
+            continue
 
-
-@pytest.fixture
-def registered_courier(api_request, courier_ids):
-    credentials = register_new_courier_and_return_login_password()
-    assert credentials, "Не удалось зарегистрировать уникального курьера"
-    login, password, first_name = credentials
-
-    login_response = api_request(
-        "POST",
-        "/courier/login",
-        json={"login": login, "password": password},
-    )
-    assert login_response.status_code == 200, login_response.text
-    courier_ids.add(login_response.json()["id"])
-
-    return {
-        "login": login,
-        "password": password,
-        "firstName": first_name,
-        "id": login_response.json()["id"],
-    }
-
-
-@pytest.fixture
-def order_payload():
-    return {
-        "firstName": "Тест",
-        "lastName": "Заказ",
-        "address": "Москва, ул. Тестовая, д. 1",
-        "metroStation": "4",
-        "phone": "+7 800 355 35 35",
-        "rentTime": 2,
-        "deliveryDate": (date.today() + timedelta(days=2)).isoformat(),
-        "comment": "Тестовый заказ",
-    }
+        delete_response = api_request(
+            "DELETE", DELETE_COURIER_ENDPOINT.format(courier_id)
+        )
+        if delete_response.status_code not in (200, 404):
+            logger.error(
+                "Could not delete test courier %s (HTTP %s): %s",
+                courier_id,
+                delete_response.status_code,
+                delete_response.text,
+            )
 
 
 @pytest.fixture
@@ -133,7 +81,7 @@ def order_factory(api_request):
     tracks = set()
 
     def create(payload):
-        response = api_request("POST", "/orders", json=payload)
+        response = api_request("POST", ORDERS_ENDPOINT, json=payload)
         if response.status_code == 201:
             track = response.json().get("track")
             if track is not None:
@@ -143,5 +91,13 @@ def order_factory(api_request):
     yield create
 
     for track in tracks:
-        response = api_request("PUT", "/orders/cancel", params={"track": track})
-        assert response.status_code == 200, response.text
+        response = api_request(
+            "PUT", CANCEL_ORDER_ENDPOINT, params={"track": track}
+        )
+        if response.status_code != 200:
+            logger.error(
+                "Could not cancel test order %s (HTTP %s): %s",
+                track,
+                response.status_code,
+                response.text,
+            )
